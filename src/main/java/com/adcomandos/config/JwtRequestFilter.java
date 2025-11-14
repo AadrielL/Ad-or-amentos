@@ -1,6 +1,6 @@
 package com.adcomandos.config;
 
-import com.adcomandos.service.UsuarioService;
+import io.jsonwebtoken.ExpiredJwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -8,21 +8,42 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.List;
 
 @Component
 public class JwtRequestFilter extends OncePerRequestFilter {
 
-    private final UsuarioService usuarioService;
+    private final UserDetailsService userDetailsService;
     private final JwtTokenUtil jwtTokenUtil;
 
-    public JwtRequestFilter(UsuarioService usuarioService, JwtTokenUtil jwtTokenUtil) {
-        this.usuarioService = usuarioService;
+    // Lista de caminhos que DEVEM IGNORAR a validação do token
+    private static final List<String> PUBLIC_PATHS = Arrays.asList(
+            "/api/auth",
+            "/api/orcamento" // Seu endpoint público no singular
+    );
+
+    public JwtRequestFilter(UserDetailsService userDetailsService, JwtTokenUtil jwtTokenUtil) {
+        this.userDetailsService = userDetailsService;
         this.jwtTokenUtil = jwtTokenUtil;
+    }
+
+    /**
+     * Define quais caminhos o filtro JWT deve ignorar.
+     * Retorna true se o filtro DEVE ser ignorado para este path.
+     */
+    @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) throws ServletException {
+        String path = request.getServletPath();
+
+        // Verifica se o caminho começa com algum dos caminhos públicos definidos
+        return PUBLIC_PATHS.stream().anyMatch(path::startsWith);
     }
 
     @Override
@@ -34,41 +55,39 @@ public class JwtRequestFilter extends OncePerRequestFilter {
         String username = null;
         String jwtToken = null;
 
-        // Verifica se o header Authorization existe e se está no formato "Bearer token"
+        // O token JWT está no formato "Bearer token". Removemos "Bearer " e pegamos apenas o token.
         if (requestTokenHeader != null && requestTokenHeader.startsWith("Bearer ")) {
-            // Remove "Bearer " para obter o token
             jwtToken = requestTokenHeader.substring(7);
             try {
                 username = jwtTokenUtil.getUsernameFromToken(jwtToken);
-            } catch (Exception e) {
-                // Em caso de token expirado ou inválido
-                System.out.println("JWT Token inválido ou expirado: " + e.getMessage());
+            } catch (IllegalArgumentException e) {
+                logger.warn("Não foi possível obter o JWT.");
+            } catch (ExpiredJwtException e) {
+                logger.warn("O token JWT expirou.");
             }
         } else {
-            // Se não houver token, apenas ignora e deixa passar
-            // System.out.println("JWT Token não encontrado no header 'Authorization'.");
+            // Este log é útil, mas não deve impedir requisições públicas.
+            // logger.warn("O token JWT não começa com Bearer String ou está ausente.");
         }
 
-        // Se o username foi extraído e não há autenticação no contexto
+        // Valida o token e configura a segurança
         if (username != null && SecurityContextHolder.getContext().getAuthentication() == null) {
 
-            UserDetails userDetails = this.usuarioService.loadUserByUsername(username);
+            UserDetails userDetails = this.userDetailsService.loadUserByUsername(username);
 
-            // Valida o token e as credenciais
             if (jwtTokenUtil.validateToken(jwtToken, userDetails)) {
 
-                // Cria o objeto de autenticação para o Spring Security
                 UsernamePasswordAuthenticationToken usernamePasswordAuthenticationToken = new UsernamePasswordAuthenticationToken(
                         userDetails, null, userDetails.getAuthorities());
+                usernamePasswordAuthenticationToken
+                        .setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
 
-                // Define os detalhes da requisição
-                usernamePasswordAuthenticationToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-
-                // Define o usuário como autenticado no Contexto de Segurança do Spring
+                // Define o usuário como autenticado no contexto do Spring Security
                 SecurityContextHolder.getContext().setAuthentication(usernamePasswordAuthenticationToken);
             }
         }
-        // Continua a cadeia de filtros
+
+        // Continua a cadeia de filtros, permitindo que o SecurityConfig finalize a decisão
         chain.doFilter(request, response);
     }
 }

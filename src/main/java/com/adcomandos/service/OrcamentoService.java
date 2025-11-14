@@ -1,125 +1,213 @@
 package com.adcomandos.service;
 
-import com.adcomandos.dto.OrcamentoRequestDTO;
+import com.adcomandos.dto.LevantamentoRequestDTO;
 import com.adcomandos.dto.OrcamentoResponseDTO;
-import com.adcomandos.model.Material;
 import com.adcomandos.model.Orcamento;
-import com.adcomandos.model.ServicoPadrao; // Novo
+import com.adcomandos.model.ServicoPadrao;
 import com.adcomandos.model.Usuario;
-import com.adcomandos.repository.MaterialRepository; // Novo
-import com.adcomandos.repository.ServicoPadraoRepository; // Novo
+import com.adcomandos.model.ItemMaterial;
 import com.adcomandos.repository.OrcamentoRepository;
+import com.adcomandos.repository.ServicoPadraoRepository;
+import com.adcomandos.repository.UsuarioRepository;
+import jakarta.transaction.Transactional;
+import jakarta.validation.Valid;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional; // Novo
+
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.Collections;
+import java.util.List;
+import java.util.NoSuchElementException;
+import java.util.stream.Collectors;
 
 @Service
 public class OrcamentoService {
 
-    private final MaterialRepository materialRepository;
-    private final ServicoPadraoRepository servicoPadraoRepository;
     private final OrcamentoRepository orcamentoRepository;
-    private final EmailService emailService; // ⬅️ NOVO: Injeção do Serviço de E-mail
+    private final UsuarioRepository usuarioRepository;
+    private final ItemMaterialService itemMaterialService;
+    private final ServicoPadraoRepository servicoPadraoRepository;
 
-    // Taxas de Complexidade (Multiplicador de Lucro/Margem)
-    private static final Map<String, BigDecimal> COMPLEXIDADE_MULTIPLIER = new HashMap<>();
-    static {
-        COMPLEXIDADE_MULTIPLIER.put("SIMPLES", new BigDecimal("1.25")); // 25% de margem
-        COMPLEXIDADE_MULTIPLIER.put("MEDIO", new BigDecimal("1.40")); // 40%
-        COMPLEXIDADE_MULTIPLIER.put("ALTA", new BigDecimal("1.60")); // 60%
-    }
+    private static final Long ID_USUARIO_PADRAO = 1L;
 
-    private static final BigDecimal HORA_TECNICA_BASE = new BigDecimal("80.00");
-    private static final BigDecimal HORA_AJUDANTE = new BigDecimal("35.00");
+    // --- CONSTANTES DE CÁLCULO DE CUSTO (AJUSTAR!) ---
+    private static final double VALOR_BASE_POR_M2 = 12.00;     // Exemplo: R$ 12,00 por m²
+    private static final int LIMITE_PONTOS_PADRAO = 35;       // Limite de pontos incluídos no valor base
+    private static final double VALOR_ADICIONAL_POR_PONTO = 25.00; // Custo por ponto extra
 
-    // ⬅️ Construtor COMPLETO com todas as dependências (incluindo EmailService)
-    public OrcamentoService(MaterialRepository materialRepository,
-                            ServicoPadraoRepository servicoPadraoRepository,
-                            OrcamentoRepository orcamentoRepository,
-                            EmailService emailService) {
-        this.materialRepository = materialRepository;
-        this.servicoPadraoRepository = servicoPadraoRepository;
+    // --- NOVAS CONSTANTES DE CÁLCULO DE TEMPO (AJUSTAR!) ---
+    private static final double TEMPO_BASE_SETUP_HORAS = 4.0;   // Tempo fixo para deslocamento, organização, etc.
+    private static final double TEMPO_POR_PONTO_HORAS = 0.5;    // Tempo médio por tomada/ponto de luz (30 min)
+    private static final double TEMPO_POR_CHUVEIRO_HORAS = 1.0; // Tempo adicional por chuveiro
+    private static final double TEMPO_POR_AR_CONDICIONADO_HORAS = 1.5; // Tempo adicional por AC
+
+    // Configurações de custo fixo e margem
+    private static final BigDecimal FATOR_COMPLEXIDADE = new BigDecimal("1.2"); // Margem de lucro (20%)
+    private static final double VALOR_AJUDANTE = 150.00;
+    private static final double VALOR_DESLOCAMENTO = 50.00;
+
+
+    public OrcamentoService(OrcamentoRepository orcamentoRepository,
+                            UsuarioRepository usuarioRepository,
+                            ItemMaterialService itemMaterialService,
+                            ServicoPadraoRepository servicoPadraoRepository) {
         this.orcamentoRepository = orcamentoRepository;
-        this.emailService = emailService; // Inicialização do EmailService
+        this.usuarioRepository = usuarioRepository;
+        this.itemMaterialService = itemMaterialService;
+        this.servicoPadraoRepository = servicoPadraoRepository;
     }
 
-    @Transactional // Garante que o cálculo e o salvamento ocorram juntos
-    public OrcamentoResponseDTO calcularOrcamento(OrcamentoRequestDTO request, Usuario usuario) {
+    @Transactional
+    public OrcamentoResponseDTO calcularOrcamentoParaCliente(LevantamentoRequestDTO request) {
 
-        BigDecimal custoMaterialTotal = BigDecimal.ZERO;
-        BigDecimal custoMaoObraBase = BigDecimal.ZERO;
+        Usuario usuarioPadrao = usuarioRepository.findById(ID_USUARIO_PADRAO)
+                .orElseThrow(() -> new NoSuchElementException("Usuário padrão (ID " + ID_USUARIO_PADRAO + ") para clientes anônimos não encontrado!"));
 
-        // ... (Lógica de cálculo existente permanece igual) ...
+        // 1. Levantamento de Material
+        List<ItemMaterial> itensMaterial = itemMaterialService.criarItensMaterial(request);
 
-        for (OrcamentoRequestDTO.ItemOrcamentoDTO item : request.getItens()) {
-            // ... (Lógica de processamento de MATERIAL e SERVICO) ...
-        }
+        // 2. CÁLCULO DE CUSTOS DE SERVIÇO (M² + Pontos Extras)
+        BigDecimal custoMaoDeObra = BigDecimal.valueOf(calcularCustoMaoDeObra(request)).setScale(2, RoundingMode.HALF_UP);
 
-        BigDecimal multiplicador = COMPLEXIDADE_MULTIPLIER.getOrDefault(
-                request.getComplexidade().toUpperCase(),
-                COMPLEXIDADE_MULTIPLIER.get("MEDIO")
-        );
+        // 3. CÁLCULO DO TEMPO ESTIMADO (Baseado nos Pontos e Equipamentos)
+        Double tempoEstimado = calcularTempoEstimado(request);
 
-        BigDecimal valorMaterialFinal = custoMaterialTotal.multiply(multiplicador).setScale(2, RoundingMode.HALF_UP);
-        BigDecimal valorMaoObraFinal = custoMaoObraBase.multiply(multiplicador).setScale(2, RoundingMode.HALF_UP);
+        // Conversão dos valores fixos para BigDecimal para cálculos
+        BigDecimal valorAjudante = BigDecimal.valueOf(VALOR_AJUDANTE);
+        BigDecimal valorDeslocamento = BigDecimal.valueOf(VALOR_DESLOCAMENTO);
 
-        BigDecimal valorDeslocamento = BigDecimal.ZERO;
-        if (request.getHorasDeslocamento() != null && request.getHorasDeslocamento() > 0) {
-            BigDecimal horas = BigDecimal.valueOf(request.getHorasDeslocamento());
-            valorDeslocamento = HORA_TECNICA_BASE.multiply(horas).multiply(multiplicador).setScale(2, RoundingMode.HALF_UP);
-        }
+        // 4. CÁLCULO DO VALOR TOTAL (Serviço + Custos Fixos + Margem)
+        BigDecimal custoMaterial = BigDecimal.ZERO;
 
-        BigDecimal valorAjudante = BigDecimal.ZERO;
-        if (request.getHorasAjudante() != null && request.getHorasAjudante() > 0) {
-            BigDecimal horas = BigDecimal.valueOf(request.getHorasAjudante());
-            valorAjudante = HORA_AJUDANTE.multiply(horas).setScale(2, RoundingMode.HALF_UP);
-        }
-
-        BigDecimal valorTotal = valorMaterialFinal
-                .add(valorMaoObraFinal)
-                .add(valorDeslocamento)
+        BigDecimal subTotalServico = custoMaoDeObra
                 .add(valorAjudante)
+                .add(valorDeslocamento);
+
+        // Aplica a margem de lucro/complexidade
+        BigDecimal valorTotalServico = subTotalServico
+                .multiply(FATOR_COMPLEXIDADE)
                 .setScale(2, RoundingMode.HALF_UP);
 
-        // ===============================================
-        // 1. Mapear e salvar o objeto Orcamento no banco
-        // ===============================================
-        Orcamento novoOrcamento = new Orcamento();
-        novoOrcamento.setClienteNome(request.getClienteNome());
-        novoOrcamento.setClienteTelefone(request.getClienteTelefone());
-        novoOrcamento.setClienteEndereco(request.getClienteEndereco());
-        novoOrcamento.setComplexidade(request.getComplexidade().toUpperCase());
-        novoOrcamento.setValorMaterial(valorMaterialFinal);
-        novoOrcamento.setValorMaoObra(valorMaoObraFinal);
-        novoOrcamento.setValorDeslocamento(valorDeslocamento);
-        novoOrcamento.setValorAjudante(valorAjudante);
-        novoOrcamento.setValorTotal(valorTotal);
-        novoOrcamento.setUsuario(usuario); // Associa ao Admin logado
+        // 5. Persistência e Resposta
+        Orcamento orcamentoSalvo = salvarOrcamento(
+                request,
+                custoMaoDeObra,
+                valorAjudante,
+                valorDeslocamento,
+                tempoEstimado,
+                valorTotalServico,
+                usuarioPadrao,
+                itensMaterial
+        );
 
-        orcamentoRepository.save(novoOrcamento);
-
-        // ===============================================
-        // 2. Montar a resposta e DISPARAR O E-MAIL
-        // ===============================================
-        OrcamentoResponseDTO response = OrcamentoResponseDTO.builder()
-                .clienteNome(request.getClienteNome())
-                .valorMaterial(valorMaterialFinal)
-                .valorMaoObra(valorMaoObraFinal)
-                .valorDeslocamento(valorDeslocamento)
+        // Mapeamento para DTO de resposta
+        return OrcamentoResponseDTO.builder()
+                .id(orcamentoSalvo.getId())
+                .clienteNome(orcamentoSalvo.getClienteNome())
+                .endereco(orcamentoSalvo.getEndereco())
+                .dataGeracao(orcamentoSalvo.getDataGeracao())
+                .adminResponsavel(usuarioPadrao.getEmail())
+                .nivelComplexidade(orcamentoSalvo.getNivelComplexidade())
+                .custoTotalMaoDeObra(custoMaoDeObra)
                 .valorAjudante(valorAjudante)
-                .valorTotal(valorTotal)
-                .complexidadeAplicada(request.getComplexidade().toUpperCase())
-                .mensagem("Orçamento calculado e salvo. Email enviado para o cliente!")
+                .valorDeslocamento(valorDeslocamento)
+                .custoTotalMaterial(custoMaterial)
+                .valorTotalServico(valorTotalServico)
+                .tempoEstimadoHoras(tempoEstimado)
+                .materiaisRecomendados(mapItensMaterialToDTO(itensMaterial))
                 .build();
-
-        // 📧 Disparo do E-mail
-        // Requer que o campo clienteEmail tenha sido adicionado ao OrcamentoRequestDTO
-        // Se você não o adicionou, comente ou adicione-o antes de executar.
-        // emailService.enviarOrcamento(request.getClienteEmail(), response);
-
-        return response;
     }
-}
+
+    // --- MÉTODOS DE LÓGICA DE NEGÓCIO ---
+
+    /**
+     * Implementa a regra: Custo Base (M²) + Adicional para Pontos Excedentes ( > 35).
+     */
+    private double calcularCustoMaoDeObra(LevantamentoRequestDTO dto) {
+        double custoBaseM2 = dto.getMetragemQuadrada() * VALOR_BASE_POR_M2;
+        int totalPontos = dto.getQuantidadeTomadas() + dto.getQuantidadePontosLuz();
+
+        double custoAdicionalPontos = 0.0;
+
+        if (totalPontos > LIMITE_PONTOS_PADRAO) {
+            int pontosExtras = totalPontos - LIMITE_PONTOS_PADRAO;
+            custoAdicionalPontos = pontosExtras * VALOR_ADICIONAL_POR_PONTO;
+        }
+
+        return custoBaseM2 + custoAdicionalPontos;
+    }
+
+    /**
+     * Implementa a regra de cálculo de tempo baseado em pontos e equipamentos.
+     */
+    private Double calcularTempoEstimado(LevantamentoRequestDTO dto) {
+        // Cálculo do total de pontos (tomadas + luzes)
+        double totalPontos = dto.getQuantidadeTomadas() + dto.getQuantidadePontosLuz();
+
+        double tempoPontos = totalPontos * TEMPO_POR_PONTO_HORAS;
+        double tempoChuveiros = dto.getQuantidadeChuveiros() * TEMPO_POR_CHUVEIRO_HORAS;
+        double tempoArCondicionado = dto.getQuantidadeArCondicionado() * TEMPO_POR_AR_CONDICIONADO_HORAS;
+
+        double tempoTotal = TEMPO_BASE_SETUP_HORAS + tempoPontos + tempoChuveiros + tempoArCondicionado;
+
+        // Arredonda para 1 casa decimal
+        return BigDecimal.valueOf(tempoTotal)
+                .setScale(1, RoundingMode.HALF_UP)
+                .doubleValue();
+    }
+
+    /**
+     * Busca a primeira regra de Serviço Padrão disponível (Ainda usada para validar se há admin cadastrado).
+     */
+    private ServicoPadrao buscarRegraServicoSimplificada() {
+        return servicoPadraoRepository.findAll().stream()
+                .findFirst()
+                .orElseThrow(() -> new NoSuchElementException("Nenhum ServicoPadrao encontrado. Cadastre um serviço como ADMIN."));
+    }
+
+    private Orcamento salvarOrcamento(LevantamentoRequestDTO request,
+                                      BigDecimal custoMaoDeObra,
+                                      BigDecimal valorAjudante,
+                                      BigDecimal valorDeslocamento,
+                                      Double tempoEstimado,
+                                      BigDecimal valorTotalServico,
+                                      Usuario admin,
+                                      List<ItemMaterial> itensMaterial) {
+        Orcamento orcamento = new Orcamento();
+        orcamento.setClienteNome(request.getClienteNome() != null ? request.getClienteNome() : "Cliente Anônimo");
+        orcamento.setEndereco(request.getEndereco() != null ? request.getEndereco() : "Endereço Não Informado");
+        orcamento.setClienteTelefone(request.getClienteTelefone());
+        orcamento.setMetragemQuadrada(request.getMetragemQuadrada());
+        orcamento.setQuantidadeTomadas(request.getQuantidadeTomadas());
+        orcamento.setQuantidadePontosLuz(request.getQuantidadePontosLuz());
+        orcamento.setCustoTotalMaoDeObra(custoMaoDeObra);
+        orcamento.setValorAjudante(valorAjudante);
+        orcamento.setValorDeslocamento(valorDeslocamento);
+        orcamento.setTempoEstimadoHoras(tempoEstimado);
+        orcamento.setNivelComplexidade(request.getNivelComplexidade());
+        orcamento.setValorTotalServico(valorTotalServico);
+        orcamento.setUsuario(admin);
+
+        if (itensMaterial != null) {
+            orcamento.setItensMaterial(itensMaterial);
+            itensMaterial.forEach(item -> item.setOrcamento(orcamento));
+        }
+
+        return orcamentoRepository.save(orcamento);
+    }
+
+    private List<OrcamentoResponseDTO.MaterialRecomendadoDTO> mapItensMaterialToDTO(List<ItemMaterial> itens) {
+        if (itens == null) {
+            return Collections.emptyList();
+        }
+        return itens.stream()
+                .map(item -> OrcamentoResponseDTO.MaterialRecomendadoDTO.builder()
+                        .nome(item.getNomeMaterial())
+                        .quantidadeNecessaria(item.getQuantidadeNecessaria())
+                        .unidadeMedida(item.getUnidadeMedida())
+                        .custoUnitarioReferencia(BigDecimal.ZERO)
+                        .build())
+                .collect(Collectors.toList());
+    }
+
+    }

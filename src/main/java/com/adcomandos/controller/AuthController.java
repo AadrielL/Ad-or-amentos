@@ -1,73 +1,101 @@
 package com.adcomandos.controller;
 
-import com.adcomandos.dto.LoginRequestDTO;
-import com.adcomandos.dto.RegistroAdminRequestDTO;
-import com.adcomandos.dto.TokenResponseDTO;
+
+
+import com.adcomandos.config.JwtTokenUtil;
+
+import com.adcomandos.dto.LoginRequestDTO; // ⬅️ DTO de Entrada
+
+import com.adcomandos.dto.TokenResponseDTO; // ⬅️ DTO de Saída
+
 import com.adcomandos.model.Usuario;
-import com.adcomandos.service.AdminService;
-import com.adcomandos.config.JwtTokenUtil; // ⬅️ Assumindo que você tem uma classe JwtTokenUtil
-import jakarta.validation.Valid;
-import org.springframework.http.HttpStatus;
+
+import com.adcomandos.service.UsuarioService;
+
+import jakarta.validation.Valid; // Para validar o DTO
+
 import org.springframework.http.ResponseEntity;
+
 import org.springframework.security.authentication.AuthenticationManager;
+
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+
+import org.springframework.security.core.userdetails.UserDetails;
+
+import org.springframework.web.bind.annotation.*;
+
+
 
 @RestController
-@RequestMapping("/auth")
+
+@RequestMapping("/api/auth")
+
 public class AuthController {
 
-    private final AdminService adminService;
-    private final AuthenticationManager authenticationManager;
-    private final JwtTokenUtil jwtTokenUtil;
 
-    public AuthController(AdminService adminService,
-                          AuthenticationManager authenticationManager,
-                          JwtTokenUtil jwtTokenUtil) {
-        this.adminService = adminService;
-        this.authenticationManager = authenticationManager;
-        this.jwtTokenUtil = jwtTokenUtil;
-    }
 
-    /**
-     * POST /auth/registrar: Permite o registro do primeiro ADMIN usando o código de ativação.
-     */
-    @PostMapping("/registrar")
-    public ResponseEntity<Usuario> registrarAdmin(@RequestBody @Valid RegistroAdminRequestDTO request) {
-        try {
-            Usuario novoAdmin = adminService.registrarAdmin(request);
-            return ResponseEntity.status(HttpStatus.CREATED).body(novoAdmin);
-        } catch (IllegalArgumentException e) {
-            // Retorna 400 Bad Request em caso de e-mail duplicado ou código inválido
-            return ResponseEntity.badRequest().build();
-        }
-    }
+private final AuthenticationManager authenticationManager;
 
-    /**
-     * POST /auth/login: Autentica o usuário e gera um token JWT.
-     */
-    @PostMapping("/login")
-    public ResponseEntity<TokenResponseDTO> login(@RequestBody @Valid LoginRequestDTO request) {
-        try {
-            // 1. Autentica o usuário usando Spring Security
-            Authentication authentication = authenticationManager.authenticate(
-                    new UsernamePasswordAuthenticationToken(request.getEmail(), request.getSenha())
-            );
+private final JwtTokenUtil jwtTokenUtil;
 
-            // 2. Gera o Token JWT
-            // Note: O principal retornado é o nosso objeto Usuario
-            final String token = jwtTokenUtil.generateToken((Usuario) authentication.getPrincipal());
+private final UsuarioService usuarioService;
 
-            // 3. Retorna o Token
-            return ResponseEntity.ok(new TokenResponseDTO(token));
 
-        } catch (Exception e) {
-            // Geralmente 401 Unauthorized para credenciais inválidas
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        }
-    }
+
+public AuthController(AuthenticationManager authenticationManager, JwtTokenUtil jwtTokenUtil, UsuarioService usuarioService) {
+
+this.authenticationManager = authenticationManager;
+
+this.jwtTokenUtil = jwtTokenUtil;
+
+this.usuarioService = usuarioService;
+
+}
+
+
+
+@PostMapping("/login")
+
+// ✅ Note a anotação @Valid para aplicar as regras de NotBlank/Email
+
+public ResponseEntity<TokenResponseDTO> createAuthenticationToken(@Valid @RequestBody LoginRequestDTO loginRequestDTO) throws Exception {
+
+
+
+// 1. Tenta autenticar o usuário
+
+authenticationManager.authenticate(new UsernamePasswordAuthenticationToken(
+
+// Usa o email do DTO
+
+loginRequestDTO.getEmail(),
+
+// Usa a senha do DTO
+
+loginRequestDTO.getSenha())
+
+);
+
+
+
+// 2. Carrega os detalhes do usuário (UserDetails)
+
+final UserDetails userDetails = usuarioService
+
+.loadUserByUsername(loginRequestDTO.getEmail());
+
+
+
+// 3. Gera o token
+
+final String token = jwtTokenUtil.generateToken((Usuario) userDetails);
+
+
+
+// 4. Retorna a resposta no formato TokenResponseDTO
+
+return ResponseEntity.ok(new TokenResponseDTO(token));
+
+}
+
 }

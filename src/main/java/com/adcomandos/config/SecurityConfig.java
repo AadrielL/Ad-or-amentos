@@ -2,77 +2,82 @@ package com.adcomandos.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.AuthenticationProvider;
+import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
-import org.springframework.web.cors.CorsConfiguration;
-import org.springframework.web.cors.CorsConfigurationSource;
-import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
-import java.util.List;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
 
-    @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
-        http
-                // Desabilita CSRF (é padrão em APIs REST stateless)
-                .csrf(AbstractHttpConfigurer::disable)
-                // Define a política de sessão como STATELESS (sem sessão de usuário)
-                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                // Define as regras de autorização
-                .authorizeHttpRequests(authorize -> authorize
-                        // Endpoints públicos (login e criação de admin)
-                        .requestMatchers(HttpMethod.POST, "/api/auth/**").permitAll()
+    private final JwtRequestFilter jwtRequestFilter;
+    private final UserDetailsService userDetailsService;
 
-                        // Endpoints que requerem autenticação e a role ADMIN
-                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
-
-                        // Orçamentos e dados de autônomo requerem ADMIN
-                        .requestMatchers(HttpMethod.POST, "/api/orcamentos/**").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.GET, "/api/materiais/**").hasRole("ADMIN")
-
-                        // Qualquer outra requisição deve ser autenticada
-                        .anyRequest().authenticated()
-                )
-                .httpBasic(httpBasic -> {}) // Habilita autenticação básica temporariamente
-                .cors(cors -> cors.configurationSource(corsConfigurationSource())); // Adiciona CORS
-
-        return http.build();
+    public SecurityConfig(JwtRequestFilter jwtRequestFilter, UserDetailsService userDetailsService) {
+        this.jwtRequestFilter = jwtRequestFilter;
+        this.userDetailsService = userDetailsService;
     }
 
-    // Bean para o codificador de senhas (BCrypt)
+    @Bean
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        return http
+                // 1. Desabilita CORS e CSRF (essencial para API REST)
+                .csrf(AbstractHttpConfigurer::disable)
+                .cors(AbstractHttpConfigurer::disable)
+
+                // 2. Define o gerenciamento de sessão como STATELESS
+                .sessionManagement(session -> session
+                        .sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+
+                // 3. Define as regras de autorização
+                // BLOCO CORRETO EM SecurityConfig.java, assumindo que Orçamento = Benefício ADMIN/Premium
+
+                .authorizeHttpRequests(authorize -> authorize
+                        // 1. Permite acesso público ao endpoint de autenticação (Login)
+                        .requestMatchers("/api/auth/**").permitAll()
+                        .requestMatchers("/api/orcamento/**").permitAll()
+
+                        // 3. ✅ MANTÉM ADMIN: Protege a área de administração geral (Material)
+                        .requestMatchers("/api/materiais/**").hasRole("ADMIN")
+                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
+
+                        // 4. Requer autenticação para todas as outras requisições
+                        .anyRequest().authenticated())
+
+                // 4. Adiciona o filtro JWT antes do filtro de autenticação padrão
+                .addFilterBefore(jwtRequestFilter, UsernamePasswordAuthenticationFilter.class)
+
+                // 5. Configura o provedor de autenticação (UserDetailsService)
+                .authenticationProvider(authenticationProvider())
+
+                .build();
+    }
+
+    @Bean
+    public AuthenticationManager authenticationManager(AuthenticationConfiguration config) throws Exception {
+        return config.getAuthenticationManager();
+    }
+
+    @Bean
+    public AuthenticationProvider authenticationProvider() {
+        DaoAuthenticationProvider authProvider = new DaoAuthenticationProvider();
+        authProvider.setUserDetailsService(userDetailsService);
+        authProvider.setPasswordEncoder(passwordEncoder());
+        return authProvider;
+    }
+
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
-    }
-
-    // Bean para gerenciar a autenticação (necessário para o AuthController)
-    @Bean
-    public AuthenticationManager authenticationManager(AuthenticationConfiguration authenticationConfiguration) throws Exception {
-        return authenticationConfiguration.getAuthenticationManager();
-    }
-
-    // Configuração básica de CORS (para permitir o Frontend se conectar)
-    @Bean
-    public CorsConfigurationSource corsConfigurationSource() {
-        CorsConfiguration configuration = new CorsConfiguration();
-        // Altere a origem (AllowedOrigins) para o endereço do seu Frontend em produção!
-        configuration.setAllowedOrigins(List.of("*"));
-        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(List.of("*"));
-        configuration.setAllowCredentials(true);
-
-        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", configuration);
-        return source;
     }
 }

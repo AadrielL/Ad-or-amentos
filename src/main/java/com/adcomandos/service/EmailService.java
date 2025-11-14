@@ -30,7 +30,6 @@ public class EmailService {
 
     /**
      * Envia o orçamento calculado para o cliente.
-     * O e-mail usa um formato simples (SimpleMailMessage) que é suficiente para o texto.
      */
     public void enviarOrcamento(String destinatario, OrcamentoResponseDTO response) {
         try {
@@ -43,18 +42,24 @@ public class EmailService {
             mailSender.send(message);
 
         } catch (Exception e) {
-            // Em produção, você registraria o erro (log) aqui.
             System.err.println("Falha ao enviar e-mail para " + destinatario + ": " + e.getMessage());
-            // Nota: Não relançamos a exceção para não quebrar o fluxo de cálculo do orçamento,
-            // mas o log é importante para monitoramento.
         }
     }
 
     /**
-     * Constrói o corpo do e-mail em formato de texto.
+     * Constrói o corpo do e-mail em formato de texto, usando os nomes de campos atualizados do DTO.
      */
     private String buildEmailBody(OrcamentoResponseDTO response) {
-        String valorTotalFormatado = formatCurrency(response.getValorTotal());
+        // NOTA: O OrcamentoResponseDTO não tem o campo "valorTotal" ou "valorMaterial"
+        // Vamos somar os custos de serviço (Mão de Obra + Deslocamento + Ajudante) para obter o total de SERVIÇO.
+        java.math.BigDecimal totalServico = response.getCustoTotalMaoDeObra()
+                .add(response.getValorDeslocamento() != null ? response.getValorDeslocamento() : java.math.BigDecimal.ZERO)
+                .add(response.getValorAjudante() != null ? response.getValorAjudante() : java.math.BigDecimal.ZERO);
+
+        String valorTotalFormatado = formatCurrency(totalServico);
+
+        // O valor do material (custo) só será listado para referência interna.
+        String custoMaterialFormatado = formatCurrency(response.getCustoTotalMaterial());
 
         return String.format(
                 "Olá %s,\n\n" +
@@ -63,21 +68,22 @@ public class EmailService {
                         "DETALHES DO ORÇAMENTO\n" +
                         "--------------------------------------------------\n" +
                         "Complexidade Aplicada: %s\n\n" +
-                        "Valores Parciais:\n" +
-                        "  - Materiais: R$ %s\n" +
+                        "Valores Parciais do Serviço (Sem Material):\n" +
+                        "  - Custo Ref. Materiais: R$ %s (Material NÃO incluso no valor total. Apenas para referência de custo)\n" +
                         "  - Mão de Obra: R$ %s\n" +
                         "  - Deslocamento: R$ %s\n" +
                         "  - Ajudante: R$ %s\n\n" +
-                        "VALOR TOTAL ESTIMADO: R$ %s\n" +
+                        "VALOR TOTAL DO SERVIÇO ESTIMADO: R$ %s\n" +
                         "--------------------------------------------------\n\n" +
                         "Qualquer dúvida, entre em contato.\n\n" +
                         "Atenciosamente,\n" +
                         "Equipe AdComandos",
+                // Linha 81 no EmailService.java: CORRETA
                 response.getClienteNome(),
-                response.getComplexidadeAplicada(),
-                formatCurrency(response.getValorMaterial()),
-                formatCurrency(response.getValorMaoObra()),
-                formatCurrency(response.getValorDeslocamento()),
+                response.getNivelComplexidade(), // ⬅️ CORRIGIDO (era getComplexidadeAplicada)
+                custoMaterialFormatado, // ⬅️ CORRIGIDO (usando getCustoTotalMaterial e novo nome de variável)
+                formatCurrency(response.getCustoTotalMaoDeObra()), // ⬅️ CORRIGIDO (era getValorMaoObra)
+                formatCurrency(response.getValorDeslocamento()), // ⬅️ ASSUMIDO que este e o próximo ainda existem
                 formatCurrency(response.getValorAjudante()),
                 valorTotalFormatado
         );

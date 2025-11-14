@@ -1,21 +1,18 @@
-package com.adcomandos; // Ou use o pacote raiz do seu projeto
+package com.adcomandos;// Em KeyGenerator.java
 
-import io.jsonwebtoken.SignatureAlgorithm;
-import io.jsonwebtoken.io.Encoders;
-import io.jsonwebtoken.security.Keys;
-import java.security.Key;
+import java.security.SecureRandom;
+import java.util.Base64;
 
 public class KeyGenerator {
     public static void main(String[] args) {
-        // Gera uma chave segura de 256 bits (32 bytes)
-        Key key = Keys.secretKeyFor(SignatureAlgorithm.HS256);
+        SecureRandom random = new SecureRandom();
+        byte[] bytes = new byte[32];
+        random.nextBytes(bytes);
 
-        // Codifica para Base64 para ser usada no application.properties
-        String base64Key = Encoders.BASE64.encode(key.getEncoded());
+        // Codifica usando Base64 moderno
+        String base64Key = Base64.getEncoder().encodeToString(bytes);
 
-        System.out.println("------------------------------------------------------------------");
-        System.out.println("🔑 CHAVE SECRETA JWT GERADA (COPIE E COLE NO application.properties):");
+        System.out.println("Sua nova chave secreta JWT (32 bytes Base64):");
         System.out.println(base64Key);
-        System.out.println("------------------------------------------------------------------");
     }
 }

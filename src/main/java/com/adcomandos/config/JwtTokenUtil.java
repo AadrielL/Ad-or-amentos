@@ -3,14 +3,14 @@ package com.adcomandos.config;
 import com.adcomandos.model.Usuario;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.SignatureAlgorithm;
-import io.jsonwebtoken.io.Decoders;
-import io.jsonwebtoken.security.Keys;
+import io.jsonwebtoken.JwtException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Component;
 
+import javax.crypto.spec.SecretKeySpec;
 import java.security.Key;
+import java.util.Base64; // ✅ USO DE BASE64 MODERNO DO JAVA
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
@@ -19,65 +19,82 @@ import java.util.function.Function;
 @Component
 public class JwtTokenUtil {
 
-    // ⚠️ Esta chave deve ser configurada no application.properties
     @Value("${jwt.secret}")
     private String secret;
 
-    // Tempo de validade do token (10 horas)
-    private static final long JWT_TOKEN_VALIDITY = 10 * 60 * 60; // 10 horas em segundos
+    @Value("${jwt.expiration}")
+    private long expiration;
 
-    // Recupera o nome de usuário (email) do token JWT
+    // --- MÉTODOS PÚBLICOS DE EXPOSIÇÃO ---
+
+    public String generateToken(Usuario userDetails) {
+        Map<String, Object> claims = new HashMap<>();
+        claims.put("role", userDetails.getRole());
+        return doGenerateToken(claims, userDetails.getEmail());
+    }
+
+    public boolean validateToken(String token, UserDetails userDetails) {
+        try {
+            final String username = getUsernameFromToken(token);
+            return (username.equals(userDetails.getUsername()) && !isTokenExpired(token));
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
     public String getUsernameFromToken(String token) {
         return getClaimFromToken(token, Claims::getSubject);
     }
 
-    // Recupera a data de expiração do token JWT
-    public Date getExpirationDateFromToken(String token) {
-        return getClaimFromToken(token, Claims::getExpiration);
-    }
+    // --- MÉTODOS AUXILIARES ---
 
-    // Recupera qualquer informação (claim) do token
-    public <T> T getClaimFromToken(String token, Function<Claims, T> claimsResolver) {
+    private <T> T getClaimFromToken(String token, Function<Claims, T> claimsResolver) {
         final Claims claims = getAllClaimsFromToken(token);
         return claimsResolver.apply(claims);
     }
 
-    // Para recuperar qualquer informação do token, precisamos da chave secreta
+    /**
+     * Obtém todas as claims do token. Usa Jwts.parser() (0.9.1).
+     */
     private Claims getAllClaimsFromToken(String token) {
-        return Jwts.parserBuilder().setSigningKey(getSigningKey()).build().parseClaimsJws(token).getBody();
+        try {
+            // Sintaxe Jwts.parser() (API antiga)
+            return Jwts.parser()
+                    // setSigningKey aceita a Key gerada por getSecretKey()
+                    .setSigningKey(getSecretKey())
+                    .parseClaimsJws(token)
+                    .getBody();
+        } catch (JwtException e) {
+            throw new RuntimeException("Token JWT inválido ou expirado.", e);
+        }
     }
 
-    // Verifica se o token expirou
     private Boolean isTokenExpired(String token) {
-        final Date expiration = getExpirationDateFromToken(token);
-        return expiration.before(new Date());
+        final Date expirationDate = getClaimFromToken(token, Claims::getExpiration);
+        return expirationDate.before(new Date());
     }
 
-    // Gera o token para o usuário
-    public String generateToken(Usuario usuario) {
-        Map<String, Object> claims = new HashMap<>();
-        // Adiciona a role como claim para ser usado no filtro
-        claims.put("role", usuario.getRole());
-        return doGenerateToken(claims, usuario.getEmail());
-    }
-
-    // Criação do token - define claims, data de expiração e assina.
+    /**
+     * Constrói o token JWT.
+     */
     private String doGenerateToken(Map<String, Object> claims, String subject) {
-        return Jwts.builder().setClaims(claims).setSubject(subject)
+        return Jwts.builder()
+                .setClaims(claims)
+                .setSubject(subject)
                 .setIssuedAt(new Date(System.currentTimeMillis()))
-                .setExpiration(new Date(System.currentTimeMillis() + JWT_TOKEN_VALIDITY * 1000))
-                .signWith(getSigningKey(), SignatureAlgorithm.HS256).compact();
+                .setExpiration(new Date(System.currentTimeMillis() + expiration))
+                // ✅ CORREÇÃO: Adicionando o SignatureAlgorithm (HS256)
+                .signWith(io.jsonwebtoken.SignatureAlgorithm.HS256, getSecretKey())
+                .compact();
     }
 
-    // Valida o token: verifica se o username é o mesmo e se o token não expirou.
-    public Boolean validateToken(String token, UserDetails userDetails) {
-        final String username = getUsernameFromToken(token);
-        return (username.equals(userDetails.getUsername()) && !isTokenExpired(token));
-    }
-
-    // Decodifica a chave secreta (String) para um objeto Key
-    private Key getSigningKey() {
-        byte[] keyBytes = Decoders.BASE64.decode(this.secret);
-        return Keys.hmacShaKeyFor(keyBytes);
+    /**
+     * Gera a chave de assinatura (Key) a partir da string secreta usando Base64 moderno.
+     */
+    private Key getSecretKey() {
+        // ✅ DECODIFICAÇÃO COM java.util.Base64 (COMPATÍVEL COM JAVA 21)
+        byte[] apiKeySecretBytes = Base64.getDecoder().decode(secret);
+        // Cria uma Key com o algoritmo HmacSHA256
+        return new SecretKeySpec(apiKeySecretBytes, "HmacSHA256");
     }
 }
